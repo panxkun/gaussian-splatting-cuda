@@ -85,28 +85,28 @@ namespace gs {
                 // Define all expected parameters and their types
                 struct ParamInfo {
                     std::string name;
-                    std::variant<size_t, float, int64_t> value;
+                    std::variant<size_t, int, float, int64_t> value;
                     std::string description; // Added for better documentation
                 };
 
                 const std::vector<ParamInfo> expected_params = {
-                    {"iterations", defaults.iterations, "Total number of training iterations"},
-                    {"means_lr", defaults.means_lr, "Initial learning rate for position updates"},
-                    {"shs_lr", defaults.shs_lr, "Learning rate for spherical harmonics updates"},
-                    {"opacity_lr", defaults.opacity_lr, "Learning rate for opacity updates"},
-                    {"scaling_lr", defaults.scaling_lr, "Learning rate for scaling updates"},
-                    {"rotation_lr", defaults.rotation_lr, "Learning rate for rotation updates"},
-                    {"lambda_dssim", defaults.lambda_dssim, "DSSIM loss weight"},
-                    {"min_opacity", defaults.min_opacity, "Minimum opacity threshold"},
-                    {"growth_interval", defaults.growth_interval, "Interval between densification steps"},
-                    {"reset_opacity", defaults.reset_opacity, "Interval for opacity resets"},
-                    {"start_densify", defaults.start_densify, "Starting iteration for densification"},
-                    {"stop_densify", defaults.stop_densify, "Ending iteration for densification"},
-                    {"grad_threshold", defaults.grad_threshold, "Gradient threshold for densification"},
-                    {"opacity_reg", defaults.opacity_reg, "Opacity L1 regularization weight"},
-                    {"scale_reg", defaults.scale_reg, "Scale L1 regularization weight"},
-                    {"sh_degree", defaults.sh_degree, "Gradient threshold for densification"},
-                    {"max_cap", defaults.max_cap, "Maximum number of Gaussians for MCMC strategy"}};
+                    ParamInfo{"iterations", defaults.iterations, "Total number of training iterations"},
+                    ParamInfo{"means_lr", defaults.means_lr, "Initial learning rate for position updates"},
+                    ParamInfo{"shs_lr", defaults.shs_lr, "Learning rate for spherical harmonics updates"},
+                    ParamInfo{"opacity_lr", defaults.opacity_lr, "Learning rate for opacity updates"},
+                    ParamInfo{"scaling_lr", defaults.scaling_lr, "Learning rate for scaling updates"},
+                    ParamInfo{"rotation_lr", defaults.rotation_lr, "Learning rate for rotation updates"},
+                    ParamInfo{"lambda_dssim", defaults.lambda_dssim, "DSSIM loss weight"},
+                    ParamInfo{"min_opacity", defaults.min_opacity, "Minimum opacity threshold"},
+                    ParamInfo{"growth_interval", defaults.growth_interval, "Interval between densification steps"},
+                    ParamInfo{"reset_opacity", defaults.reset_opacity, "Interval for opacity resets"},
+                    ParamInfo{"start_densify", defaults.start_densify, "Starting iteration for densification"},
+                    ParamInfo{"stop_densify", defaults.stop_densify, "Ending iteration for densification"},
+                    ParamInfo{"grad_threshold", defaults.grad_threshold, "Gradient threshold for densification"},
+                    ParamInfo{"opacity_reg", defaults.opacity_reg, "Opacity L1 regularization weight"},
+                    ParamInfo{"scale_reg", defaults.scale_reg, "Scale L1 regularization weight"},
+                    ParamInfo{"sh_degree", defaults.sh_degree, "Gradient threshold for densification"},
+                    ParamInfo{"max_cap", defaults.max_cap, "Maximum number of Gaussians for MCMC strategy"}};
 
                 // Check all expected parameters
                 for (const auto& param : expected_params) {
