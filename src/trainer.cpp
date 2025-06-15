@@ -63,6 +63,9 @@ namespace gs {
             lpips_metric_ = std::make_unique<metrics::LPIPS>(lpips_path.string());
             metrics_reporter_ = std::make_unique<metrics::MetricsReporter>(params.dataset.output_path);
         }
+
+        viewer_ = std::make_unique<Viewer>("GS-CUDA", 1280, 720);
+        viewer_->start();
     }
 
     auto Trainer::make_train_dataloader(int workers) const {
@@ -83,6 +86,28 @@ namespace gs {
             for (auto& batch : *train_dataloader) {
                 if (iter > params_.optimization.iterations) {
                     break;
+                }
+
+                {
+                    if(viewer_){
+                        Camera* cam0 = train_dataset_->get_cameras()[0].get();
+                        torch::Tensor viewmat = cam0->world_view_transform().squeeze(0);
+                        torch::Tensor R = viewmat.index({torch::indexing::Slice(0, 3), torch::indexing::Slice(0, 3)});
+                        torch::Tensor t = viewmat.index({torch::indexing::Slice(0, 3), 3}).squeeze();
+
+                        Camera cam = Camera(
+                            R,
+                            t,
+                            cam0->FoVx(),
+                            cam0->FoVy(),
+                            "test",
+                            "none",
+                            980,
+                            545,
+                            -1);
+                        auto vis_output = gs::rasterize(cam, strategy_->get_model(), background_, 1, false); // no grad?
+                        viewer_->setRenderOutput(vis_output);
+                    }
                 }
 
                 auto camera_with_image = batch[0].data;
@@ -155,6 +180,14 @@ namespace gs {
                                             iter > params_.optimization.start_densify &&
                                             iter % params_.optimization.growth_interval == 0);
 
+
+                {
+                    viewer_->info_.setProgress(iter, params_.optimization.iterations);
+                    viewer_->info_.setNumSplats(static_cast<size_t>(strategy_->get_model().size()));
+                    viewer_->info_.setLoss(loss.item<float>());
+
+                }
+
                 progress_->update(iter, loss.item<float>(), static_cast<int>(strategy_->get_model().size()), is_densifying);
                 ++iter;
             }
@@ -175,6 +208,8 @@ namespace gs {
 
         strategy_->get_model().save_ply(params_.dataset.output_path, iter, /*join=*/true);
         progress_->print_final_summary(static_cast<int>(strategy_->get_model().size()));
+
+        viewer_->join();
     }
 
     metrics::EvalMetrics Trainer::evaluate(int iteration) {
