@@ -58,9 +58,10 @@ public:
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, framebuffer->getDepthTexture());
 
-        shader->set_uniform("colorType", 1);
+        shader->set_uniform("colorType", 0);
         shader->set_uniform("screenTexture", 0);
         shader->set_uniform("depthTexture", 1);
+        
         glDrawArrays(GL_TRIANGLES, 0, 6);
 
         shader->unbind();

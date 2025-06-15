@@ -1,4 +1,4 @@
 #include "visualizer/viewer.hpp"
 
 
-Viewer* Viewer::viewer = nullptr;
+Viewer* Viewer::detail_ = nullptr;

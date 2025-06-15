@@ -6,6 +6,7 @@
 #include <thread>
 #include <vector>
 #include <chrono>
+#include <deque>
 #include <glm/glm.hpp>
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
@@ -19,74 +20,77 @@
 
 
 struct RenderingConfig{
-    int width;
-    int height;
-    float znear = 0.1f;
-    float zfar = 1000.0f;
+
+enum RenderType{
+    Color,
+    Depth
+};
+
+    RenderType type = Color;
 
     glm::mat4 viewmat = glm::mat4(1.0f);
-    glm::mat4 K = glm::mat4(1.0f);
+    glm::mat4 intrmat = glm::mat4(1.0f);
+
+    glm::vec2 reso;
 
     float scaling_modifier = 1.0f;
 
     bool isTraining = false;
-    int renderType = 0; // 0: render 1: gaussian ball 2: depth
-    
-    glm::vec3 bg_color = glm::vec3(0.0f, 0.0f, 0.0f);
-    
 };
 
-struct RenderingInfo{
-    int iterations_ = 0;
+struct TrainingInfo{
+
+    int curr_iterations_ = 0;
     int total_iterations_ = 0;
 
-    std::vector<float> time_list_;
-    std::vector<float> loss_list_;
-    std::vector<int> num_splats_list_;
+    int num_splats_ = 0;
+    int max_loss_points_ = 200;
 
-    int freq_ = 10;
+    std::deque<float> loss_buffer_;
 
-    void setProgress(int iter, int total_iterations) {
-        iterations_ = iter;
+    void updateProgress(int iter, int total_iterations) {
+        curr_iterations_ = iter;
         total_iterations_ = total_iterations;
     }
 
-    void setNumSplats(int num_splats) {
-        num_splats_list_.push_back(num_splats);
+    void updateNumSplats(int num_splats) {
+        num_splats_ = num_splats;
     }
 
-    void setIterationTime(float time) {
-        time_list_.push_back(time);
-    }
-
-    void setLoss(float loss) {
-        loss_list_.push_back(loss);
+    void updateLoss(float loss) {
+        loss_buffer_.push_back(loss);
+        while(loss_buffer_.size() > max_loss_points_) {
+            loss_buffer_.pop_front();
+        }
     }
 };
 
 
 class Viewer {
-    
-    std::string title;
-
-    GLFWwindow* window;
-
-    ImGuiWindowFlags window_flags = 0;
-
-    bool any_window_active = false;
-
-    static Viewer* viewer;
-
-    Viewport viewport;
 
 public:
 
-    RenderingConfig config_;
-    RenderingInfo info_;
+    std::string title_;
+    GLFWwindow* window_;
+    ImGuiWindowFlags window_flags = 0;
+    bool any_window_active = false;
 
-    Viewer(std::string title, int width, int height):
-        title(title), viewport(width, height){
-        viewer = this;
+    static Viewer* detail_;
+
+    Viewport viewport_;
+
+    RenderingConfig config_;
+
+    TrainingInfo info_;
+
+    gs::RenderOutput renderOutput_;
+
+    std::shared_ptr<ScreenQuadRenderer> screen_renderer_;
+
+    std::thread viewer_thread_;
+
+    Viewer(std::string title, int width, int height): title_(title), viewport_(width, height){
+        detail_ = this;
     }
 
     ~Viewer() {
@@ -111,18 +115,18 @@ public:
         glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
     #endif
 
-        window = glfwCreateWindow(
-            viewer->viewport.windowSize.x, 
-            viewer->viewport.windowSize.y, 
-            viewer->title.c_str(), NULL, NULL);
+        window_ = glfwCreateWindow(
+            detail_->viewport_.windowSize.x, 
+            detail_->viewport_.windowSize.y,
+            detail_->title_.c_str(), NULL, NULL);
 
-        if (window == NULL){
+        if (window_ == NULL){
             std::cerr << "Failed to create GLFW window!" << std::endl;
             glfwTerminate();
             return false;
         }
 
-        glfwMakeContextCurrent(window);
+        glfwMakeContextCurrent(window_);
 
         if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
             std::cerr << "GLAD init failed" << std::endl;
@@ -132,10 +136,10 @@ public:
 
         glfwSwapInterval(1); // Enable vsync
 
-        glfwSetMouseButtonCallback(window, mouseButtonCallback);
-        glfwSetCursorPosCallback(window, cursorPosCallback);
-        glfwSetScrollCallback(window, scrollCallback);
-        glfwSetKeyCallback(window, keyCallback);
+        glfwSetMouseButtonCallback(window_, mouseButtonCallback);
+        glfwSetCursorPosCallback(window_, cursorPosCallback);
+        glfwSetScrollCallback(window_, scrollCallback);
+        glfwSetKeyCallback(window_, keyCallback);
 
         glEnable(GL_LINE_SMOOTH);
         glDepthFunc(GL_LEQUAL);
@@ -155,7 +159,7 @@ public:
 
         // Setup Platform/Renderer backends
         const char* glsl_version = "#version 430";
-        ImGui_ImplGlfw_InitForOpenGL(window, true);
+        ImGui_ImplGlfw_InitForOpenGL(window_, true);
         ImGui_ImplOpenGL3_Init(glsl_version);
 
         // Set Fonts
@@ -177,10 +181,6 @@ public:
         return true;
     }
 
-    std::vector<float> loss_buffer;
-    const int max_loss_points = 200;  // 可视范围最大点数
-    int loss_sample_count = 0;        // 当前总采样数
-
     void configuration() {
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
@@ -197,19 +197,45 @@ public:
             std::cout << "Start Training button clicked." << std::endl;
         }
 
-        int current_iter = info_.iterations_;
-        int total_iters = info_.total_iterations_;
+        static const char* mode_items[] = {"Color", "Depth"};
+        static int current_item = config_.type;
+        ImGui::SetNextItemWidth(80);
+        if (ImGui::Combo("##render_mode", &current_item, mode_items, 2)) {
+            config_.type = static_cast<RenderingConfig::RenderType>(current_item);
+        }
 
-        float fraction = float(current_iter) / float(total_iters);  // 转为 0~1 范围
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(150);
+        ImGui::SliderFloat("##scale_slider", &config_.scaling_modifier, 0.01f, 3.0f, "Scale=%.2f");
+        ImGui::SameLine();
+        if (ImGui::Button("Reset##scale", ImVec2(ImGui::GetContentRegionAvail().x, 0.0f))) {
+            config_.scaling_modifier = 1.0f;
+        }
 
+        float fraction = float(info_.curr_iterations_) / float(info_.total_iterations_);
         char overlay_text[64];
-        std::snprintf(overlay_text, sizeof(overlay_text), "%d / %d", current_iter, total_iters);
+        std::snprintf(overlay_text, sizeof(overlay_text), "%d / %d", info_.curr_iterations_, info_.total_iterations_);
         ImGui::ProgressBar(fraction, ImVec2(-1, 20), overlay_text);        
 
-        AddLossValue(info_.loss_list_.empty() ? 0.0f : info_.loss_list_.back());
+        std::vector<float> loss_data(info_.loss_buffer_.begin(), info_.loss_buffer_.end());
+        auto [min_it, max_it] = std::minmax_element(loss_data.begin(), loss_data.end());
+        float min_val = *min_it, max_val = *max_it;
 
-        DrawLossPlot();
-        ImGui::Text("num Splats: %d", info_.num_splats_list_.empty() ? 0 : info_.num_splats_list_.back());
+        if (min_val == max_val) {
+            min_val -= 1.0f; max_val += 1.0f;
+        } else {
+            float margin = (max_val - min_val) * 0.05f;
+            min_val -= margin; max_val += margin;
+        }
+
+        float latest_loss = loss_data.back();
+        char loss_label[64];
+        std::snprintf(loss_label, sizeof(loss_label), "Loss: %.4f", latest_loss);
+
+        ImGui::PlotLines("##Loss", loss_data.data(), static_cast<int>(loss_data.size()),
+                        0, loss_label, min_val, max_val, ImVec2(-1, 50));
+
+        ImGui::Text("num Splats: %d", info_.num_splats_);
 
         ImGui::End();
         ImGui::PopStyleColor();
@@ -219,98 +245,52 @@ public:
 
     }
 
-    void AddLossValue(float new_loss) {
-        if (loss_buffer.size() < max_loss_points) {
-            loss_buffer.push_back(new_loss);
-        } else {
-            loss_buffer[loss_sample_count % max_loss_points] = new_loss;
-        }
-        loss_sample_count++;
-    }
-
-    void DrawLossPlot() {
-        if (loss_buffer.empty()) return;
-
-        int visible_count = std::min(loss_sample_count, max_loss_points);
-        int offset = (loss_sample_count < max_loss_points) ? 0 : (loss_sample_count % max_loss_points);
-
-        std::vector<float> display_data(visible_count);
-        for (int i = 0; i < visible_count; ++i) {
-            display_data[i] = loss_buffer[(offset + i) % max_loss_points];
-        }
-
-        auto [min_it, max_it] = std::minmax_element(display_data.begin(), display_data.end());
-        float min_val = *min_it, max_val = *max_it;
-
-        if (min_val == max_val) {
-            min_val -= 1.0f;
-            max_val += 1.0f;
-        } else {
-            float margin = (max_val - min_val) * 0.05f;
-            min_val -= margin;
-            max_val += margin;
-        }
-
-        float latest_loss = display_data.back();
-        char loss_label[64];
-        std::snprintf(loss_label, sizeof(loss_label), "Loss: %.4f", latest_loss);
-
-        ImGui::PlotLines("##Loss",
-                        display_data.data(),
-                        static_cast<int>(display_data.size()),
-                        0,
-                        loss_label,
-                        min_val,
-                        max_val,
-                        ImVec2(-1, 50)); // 高度可调整
-    }
-
     void updateWindowSize() {
         int winW, winH, fbW, fbH;
-        glfwGetWindowSize(viewer->window, &winW, &winH);
-        glfwGetFramebufferSize(viewer->window, &fbW, &fbH);
-        viewer->viewport.windowSize = glm::ivec2(winW, winH);
-        viewer->viewport.frameBufferSize = glm::ivec2(fbW, fbH);
+        glfwGetWindowSize(window_, &winW, &winH);
+        glfwGetFramebufferSize(window_, &fbW, &fbH);
+        viewport_.windowSize = glm::ivec2(winW, winH);
+        viewport_.frameBufferSize = glm::ivec2(fbW, fbH);
         glViewport(0, 0, fbW, fbH);
     }
 
     static void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
-        if (viewer->any_window_active)
+        if (detail_->any_window_active)
             return;
 
         if ((button == GLFW_MOUSE_BUTTON_LEFT || button == GLFW_MOUSE_BUTTON_RIGHT) && action == GLFW_PRESS) {
             double xpos, ypos;
             glfwGetCursorPos(window, &xpos, &ypos);
-            viewer->viewport.camera.initScreenPos(glm::vec2(xpos, ypos));
+            detail_->viewport_.camera.initScreenPos(glm::vec2(xpos, ypos));
         }
     }
 
     static void cursorPosCallback(GLFWwindow* window, double x, double y) {
-        if (viewer->any_window_active)
+        if (detail_->any_window_active)
             return;
 
         if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS) {
-            viewer->viewport.camera.translate(glm::vec2(x, y));
+            detail_->viewport_.camera.translate(glm::vec2(x, y));
         } else if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS) {
-            viewer->viewport.camera.rotate(glm::vec2(x, y));
+            detail_->viewport_.camera.rotate(glm::vec2(x, y));
         }
     }
 
     static void scrollCallback(GLFWwindow* window, double xoffset, double yoffset) {
-        if (viewer->any_window_active)
+        if (detail_->any_window_active)
             return;
 
         float delta = static_cast<float>(yoffset);
         if (std::abs(delta) < 1.0e-2f) return;
 
-        viewer->viewport.camera.zoom(delta);
+        detail_->viewport_.camera.zoom(delta);
     }
 
     static void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods){
-        if(viewer->any_window_active)
+        if(detail_->any_window_active)
             return;
 
-        auto &viewport = viewer->viewport;
+        auto &viewport_ = detail_->viewport_;
 
         // TODO: not implemented yet (pxk)
     }
@@ -330,7 +310,7 @@ public:
         
         screen_renderer_ = std::make_shared<ScreenQuadRenderer>();
 
-        while (!glfwWindowShouldClose(window)) {
+        while (!glfwWindowShouldClose(window_)) {
 
             float clearColor[] = { 0.1f, 0.1f, 0.1f, 1.0f };
             glClearBufferfv(GL_COLOR, 0, clearColor);
@@ -340,45 +320,17 @@ public:
             if(screen_renderer_) {
                 torch::Tensor image_uchar = (renderOutput_.image * 255).to(torch::kCPU).to(torch::kU8);
                 torch::Tensor depth = renderOutput_.depths.to(torch::kCPU).to(torch::kFloat32).contiguous();
-
-                // std::vector<float> depth_data(renderOutput_.width * renderOutput_.height);
-                // for (int i = 0; i < renderOutput_.width * renderOutput_.height; ++i) {
-                //     depth_data[i] = 0.5;
-                // }
-
-                float minDepth = 0.1f;  // 近裁剪面
-                float maxDepth = 10.0f; // 远裁剪面
-
-                // print depth shape, datatype
-                std::cout << depth.sizes() << std::endl;
-                std::cout << "Depth data type: " << depth.dtype() << std::endl;
-                // std::cout << "Depth data: " << depth_data << std::endl;
                 
-
-                // 归一化： z_ndc = (z_view - near) / (far - near)
-                depth = torch::clamp((depth - minDepth) / (maxDepth - minDepth), 0.0f, 1.0f);
-                depth = depth.contiguous();
-
+                // normalize depth
 
                 screen_renderer_->uploadImage(image_uchar.data_ptr<unsigned char>(), renderOutput_.width, renderOutput_.height);
                 screen_renderer_->uploadDepth(depth.data_ptr<float>(), renderOutput_.width, renderOutput_.height);
-                // screen_renderer_->uploadDepth(depth_data.data(), renderOutput_.width, renderOutput_.height);
-                screen_renderer_->render(shader, viewport);
-
-                // const float* depth_ptr = depth.data_ptr<float>();
-                
-                // int x = viewport.camera.prevPos.x;
-                // int y = viewport.camera.prevPos.y;
-                // screen_renderer_->framebuffer->readDepthAt(x, y);
-                // // std::cout << "Depth at (" << x << ", " << y << ") from buffer: " << screen_renderer_->framebuffer->readDepthAt(x, y) << std::endl;
-                // float d = depth_ptr[y * renderOutput_.width + x];
-                // std::cout << "Depth at (" << x << ", " << y << ") from tensor: " << d << std::endl;
-                
+                screen_renderer_->render(shader, viewport_);
             }
 
             configuration();
 
-            glfwSwapBuffers(window);
+            glfwSwapBuffers(window_);
             glfwPollEvents();
         }
     }
@@ -398,12 +350,8 @@ public:
     }
 
     glm::mat4 getViewMatrix() const {
-        return viewport.camera.getTransformation();
+        return viewport_.camera.getTransformation();
     }
-
-    gs::RenderOutput renderOutput_;
-    std::shared_ptr<ScreenQuadRenderer> screen_renderer_;
-    std::thread viewer_thread_;
 };
 
 
