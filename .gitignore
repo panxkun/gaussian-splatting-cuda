@@ -17,3 +17,8 @@ testdata
 
 *.pt
 !weights/*.pt
+
+
+libtorch
+run.sh
+imgui.ini

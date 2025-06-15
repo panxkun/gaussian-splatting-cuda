@@ -5,6 +5,7 @@
 #include "core/metrics.hpp"
 #include "core/parameters.hpp"
 #include "core/training_progress.hpp"
+#include "visualizer/viewer.hpp"
 #include <memory>
 #include <torch/torch.h>
 
@@ -45,6 +46,8 @@ namespace gs {
         std::shared_ptr<CameraDataset> val_dataset_;
         std::unique_ptr<IStrategy> strategy_;
         param::TrainingParameters params_;
+
+        std::unique_ptr<Viewer> viewer_;
 
         torch::Tensor background_;
         std::unique_ptr<TrainingProgress> progress_;

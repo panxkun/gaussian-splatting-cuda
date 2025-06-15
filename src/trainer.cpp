@@ -94,6 +94,9 @@ namespace gs {
 
         // Print render mode configuration
         std::cout << "Render mode: " << params.optimization.render_mode << std::endl;
+
+        viewer_ = std::make_unique<Viewer>("GS-CUDA", 1280, 720);
+        viewer_->start();
     }
 
     auto Trainer::make_train_dataloader(int workers) const {
@@ -117,6 +120,27 @@ namespace gs {
 
         for (int epoch = 0; epoch < epochs_needed && iter <= params_.optimization.iterations; ++epoch) {
             for (auto& batch : *train_dataloader) {
+                
+                if(viewer_){
+                    Camera* cam0 = train_dataset_->get_cameras()[0].get();
+                    torch::Tensor viewmat = cam0->world_view_transform().squeeze(0);
+                    torch::Tensor R = viewmat.index({torch::indexing::Slice(0, 3), torch::indexing::Slice(0, 3)});
+                    torch::Tensor t = viewmat.index({torch::indexing::Slice(0, 3), 3}).squeeze();
+
+                    Camera cam = Camera(
+                        R,
+                        t,
+                        cam0->FoVx(),
+                        cam0->FoVy(),
+                        "test",
+                        "none",
+                        980,
+                        545,
+                        -1);
+                    auto vis_output = gs::rasterize(cam, strategy_->get_model(), background_, 1, false); // no grad?
+                    viewer_->setRenderOutput(vis_output);
+                }
+
                 auto camera_with_image = batch[0].data;
                 Camera* cam = camera_with_image.camera;
                 torch::Tensor gt_image = std::move(camera_with_image.image);
@@ -207,6 +231,13 @@ namespace gs {
                                             iter > params_.optimization.start_densify &&
                                             iter % params_.optimization.growth_interval == 0);
 
+
+                if (viewer_) {
+                    viewer_->info_.updateProgress(iter, params_.optimization.iterations);
+                    viewer_->info_.updateNumSplats(static_cast<size_t>(strategy_->get_model().size()));
+                    viewer_->info_.updateLoss(loss.item<float>());
+                }
+
                 progress_->update(iter, loss.item<float>(), static_cast<int>(strategy_->get_model().size()), is_densifying);
 
                 if (iter == params_.optimization.iterations) {
@@ -232,6 +263,9 @@ namespace gs {
 
         strategy_->get_model().save_ply(params_.dataset.output_path, iter, /*join=*/true);
         progress_->print_final_summary(static_cast<int>(strategy_->get_model().size()));
+
+        if (viewer_)
+            viewer_->join();
     }
 
     torch::Tensor Trainer::apply_depth_colormap(const torch::Tensor& depth_normalized) {
