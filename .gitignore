@@ -21,4 +21,5 @@ testdata
 
 libtorch
 run.sh
-imgui.ini
+*imgui.ini
+external/glad

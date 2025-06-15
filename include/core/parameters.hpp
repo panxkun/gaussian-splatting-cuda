@@ -28,6 +28,7 @@ namespace gs {
             std::vector<size_t> eval_steps = {7000, 30000}; // Steps to evaluate the model
             std::vector<size_t> save_steps = {7000, 30000}; // Steps to save the model
             bool enable_eval = false;                       // Only evaluate when explicitly enabled
+            bool enable_viz = false;                       // Enable visualization during training
             std::string render_mode = "RGB";                // Render mode: RGB, D, ED, RGB_D, RGB_ED
         };
 

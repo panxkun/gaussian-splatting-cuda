@@ -146,6 +146,13 @@ Extract it to the `data` folder in the project root.
     - Controls the upper limit of Gaussian splats during training
     - Useful for memory-constrained environments
 
+### Visualization Options
+
+- **`-v, --viz`**  
+  Enable the Visualization mode
+    - Displays the current state of the Gaussian splatting in a window
+    - Useful for debugging and monitoring training progress
+
 ### Example Usage
 
 Basic training:

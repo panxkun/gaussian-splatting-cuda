@@ -118,6 +118,8 @@ set_target_properties(gaussian_host PROPERTIES
         DEBUG_POSTFIX d
 )
 
+add_definitions(-DPROJECT_ROOT_PATH="${PROJ_ROOT_DIR}")
+
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g -O0")
     set(CMAKE_CUDA_FLAGS_DEBUG "${CMAKE_CUDA_FLAGS_DEBUG} -g -G -O0")

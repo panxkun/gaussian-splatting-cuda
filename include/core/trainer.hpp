@@ -5,11 +5,12 @@
 #include "core/metrics.hpp"
 #include "core/parameters.hpp"
 #include "core/training_progress.hpp"
-#include "visualizer/viewer.hpp"
 #include <memory>
 #include <torch/torch.h>
 
 namespace gs {
+
+    class GSViewer;
 
     class Trainer {
     public:
@@ -26,6 +27,8 @@ namespace gs {
         Trainer(Trainer&&) = default;
         Trainer& operator=(Trainer&&) = default;
 
+        ~Trainer();
+
         // Main training method
         virtual void train();
 
@@ -35,6 +38,9 @@ namespace gs {
         // Get the strategy (for external access if needed)
         IStrategy& get_strategy() { return *strategy_; }
         const IStrategy& get_strategy() const { return *strategy_; }
+
+        // Get the training parameters
+        const param::TrainingParameters& get_parameters() const { return params_; }
 
     protected:
         // Helper to create fresh dataloaders
@@ -47,7 +53,7 @@ namespace gs {
         std::unique_ptr<IStrategy> strategy_;
         param::TrainingParameters params_;
 
-        std::unique_ptr<Viewer> viewer_;
+        std::unique_ptr<GSViewer> viewer_;
 
         torch::Tensor background_;
         std::unique_ptr<TrainingProgress> progress_;
@@ -62,6 +68,7 @@ namespace gs {
 
         void save_depth_visualization(const torch::Tensor& depth, int iteration, const std::string& prefix);
         torch::Tensor apply_depth_colormap(const torch::Tensor& depth_normalized);
+
     };
 
 } // namespace gs

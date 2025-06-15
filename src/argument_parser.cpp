@@ -41,6 +41,7 @@ namespace gs {
             ::args::ValueFlag<std::string> images_folder(parser, "images", "Images folder name (e.g., images, images_2, images_4, images_8)", {"images"});
             ::args::ValueFlag<int> test_every(parser, "test_every", "Every N-th image is a test image", {"test-every"});
             ::args::Flag enable_eval(parser, "eval", "Enable evaluation during training", {"eval"});
+            ::args::Flag enable_viz(parser, "viz", "Enable visualization during training", {'v', "viz"});
 
             // Add render mode arguments
             ::args::ValueFlag<std::string> render_mode(parser, "render_mode", "Render mode: RGB, D, ED, RGB_D, RGB_ED", {"render-mode"});
@@ -107,6 +108,10 @@ namespace gs {
 
             if (enable_eval) {
                 params.optimization.enable_eval = true;
+            }
+
+            if (enable_viz) {
+                params.optimization.enable_viz = true;
             }
 
             // Process render mode arguments

@@ -6,6 +6,7 @@
 #include <iostream>
 #include <numeric>
 #include <torch/torch.h>
+#include "visualizer/detail.hpp"
 
 namespace gs {
 
@@ -95,8 +96,20 @@ namespace gs {
         // Print render mode configuration
         std::cout << "Render mode: " << params.optimization.render_mode << std::endl;
 
-        viewer_ = std::make_unique<Viewer>("GS-CUDA", 1280, 720);
-        viewer_->start();
+        if (params.optimization.enable_viz) {
+            std::cout << "Visualization enabled." << std::endl;
+            viewer_ = std::make_unique<GSViewer>("GS-CUDA", 1280, 720);
+            viewer_->setTrainer(this);
+            viewer_->start();
+        } else {
+            std::cout << "Visualization disabled." << std::endl;
+        }
+    }
+
+    Trainer::~Trainer() {
+        if (viewer_) {
+            viewer_->join();
+        }
     }
 
     auto Trainer::make_train_dataloader(int workers) const {
@@ -120,44 +133,34 @@ namespace gs {
 
         for (int epoch = 0; epoch < epochs_needed && iter <= params_.optimization.iterations; ++epoch) {
             for (auto& batch : *train_dataloader) {
-                
-                if(viewer_){
-                    Camera* cam0 = train_dataset_->get_cameras()[0].get();
-                    torch::Tensor viewmat = cam0->world_view_transform().squeeze(0);
-                    torch::Tensor R = viewmat.index({torch::indexing::Slice(0, 3), torch::indexing::Slice(0, 3)});
-                    torch::Tensor t = viewmat.index({torch::indexing::Slice(0, 3), 3}).squeeze();
-
-                    Camera cam = Camera(
-                        R,
-                        t,
-                        cam0->FoVx(),
-                        cam0->FoVy(),
-                        "test",
-                        "none",
-                        980,
-                        545,
-                        -1);
-                    auto vis_output = gs::rasterize(cam, strategy_->get_model(), background_, 1, false); // no grad?
-                    viewer_->setRenderOutput(vis_output);
-                }
 
                 auto camera_with_image = batch[0].data;
                 Camera* cam = camera_with_image.camera;
                 torch::Tensor gt_image = std::move(camera_with_image.image);
 
-                // Use the render mode from parameters
-                auto r_output = gs::rasterize(
-                    *cam,
-                    strategy_->get_model(),
-                    background_,
-                    1.0f,
-                    false,
-                    false,
-                    render_mode // Use the configured render mode
-                );
+                auto render_fn = [this, &cam, render_mode]() {
+                    return gs::rasterize(
+                        *cam,
+                        strategy_->get_model(),
+                        background_,
+                        1.0f,
+                        false,
+                        false,
+                        render_mode
+                    );
+                };
+
+                RenderOutput r_output;
+
+                if (viewer_){
+                    std::lock_guard<std::mutex> lock(viewer_->splat_mtx_);
+                    r_output = render_fn();
+                } else {
+                    r_output = render_fn();
+                }
 
                 torch::Tensor loss;
-
+                
                 // Only process RGB if render mode includes it
                 if (has_rgb) {
                     if (r_output.image.dim() == 3)
@@ -198,7 +201,7 @@ namespace gs {
                     loss = torch::zeros({1}, torch::kFloat32).to(torch::kCUDA);
                     loss.requires_grad_(true);
                 }
-
+                
                 loss.backward();
 
                 {
@@ -222,23 +225,42 @@ namespace gs {
                             strategy_->get_model().save_ply(params_.dataset.output_path, iter, /*join=*/false);
                         }
                     }
-
-                    strategy_->post_backward(iter, r_output);
-                    strategy_->step(iter);
+                    
+                    auto do_strategy = [&]() {
+                        strategy_->post_backward(iter, r_output);
+                        strategy_->step(iter);
+                    };
+                    
+                    if (viewer_) {
+                        std::lock_guard<std::mutex> lock(viewer_->splat_mtx_);
+                        do_strategy();
+                    } else {
+                        do_strategy();
+                    }
                 }
 
                 const bool is_densifying = (iter < params_.optimization.stop_densify &&
                                             iter > params_.optimization.start_densify &&
                                             iter % params_.optimization.growth_interval == 0);
 
+                progress_->update(iter, loss.item<float>(), static_cast<int>(strategy_->get_model().size()), is_densifying);
 
                 if (viewer_) {
-                    viewer_->info_.updateProgress(iter, params_.optimization.iterations);
-                    viewer_->info_.updateNumSplats(static_cast<size_t>(strategy_->get_model().size()));
-                    viewer_->info_.updateLoss(loss.item<float>());
-                }
 
-                progress_->update(iter, loss.item<float>(), static_cast<int>(strategy_->get_model().size()), is_densifying);
+                    if(viewer_->info_){
+                        auto &info = viewer_->info_;
+                        std::lock_guard<std::mutex> lock(viewer_->info_->mtx);
+                        info->updateProgress(iter, params_.optimization.iterations);
+                        info->updateNumSplats(static_cast<size_t>(strategy_->get_model().size()));
+                        info->updateLoss(loss.item<float>());
+                    }
+
+                    if(viewer_->notifier_){
+                        auto &notifier = viewer_->notifier_;
+                        std::unique_lock<std::mutex> lock(notifier->mtx);
+                        notifier->cv.wait(lock, [&notifier] { return notifier->ready;});
+                    }
+                }
 
                 if (iter == params_.optimization.iterations) {
                     break;
@@ -264,8 +286,6 @@ namespace gs {
         strategy_->get_model().save_ply(params_.dataset.output_path, iter, /*join=*/true);
         progress_->print_final_summary(static_cast<int>(strategy_->get_model().size()));
 
-        if (viewer_)
-            viewer_->join();
     }
 
     torch::Tensor Trainer::apply_depth_colormap(const torch::Tensor& depth_normalized) {

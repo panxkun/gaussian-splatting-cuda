@@ -1,5 +1,4 @@
-#ifndef __RENDERER_H__
-#define __RENDERER_H__
+#pragma once
 
 #include "visualizer/viewport.hpp"
 #include "visualizer/shader.hpp"
@@ -55,12 +54,8 @@ public:
         glBindVertexArray(quadVAO);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, framebuffer->getFrameTexture());
-        glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, framebuffer->getDepthTexture());
 
-        shader->set_uniform("colorType", 0);
         shader->set_uniform("screenTexture", 0);
-        shader->set_uniform("depthTexture", 1);
         
         glDrawArrays(GL_TRIANGLES, 0, 6);
 
@@ -68,14 +63,7 @@ public:
 
     }
 
-
-    void uploadImage(const unsigned char* data, int width_, int height_){
-        framebuffer->uploadImage(data, width_, height_);
-    }
-
-    void uploadDepth(const float* depth_data, int width_, int height_){
-        framebuffer->uploadDepth(depth_data, width_, height_);
+    void uploadData(const unsigned char* image, int width_, int height_){
+        framebuffer->uploadImage(image, width_, height_);
     }
 };
-
-#endif 

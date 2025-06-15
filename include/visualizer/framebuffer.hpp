@@ -1,5 +1,4 @@
-#ifndef __FRAMEBUFFER_H__
-#define __FRAMEBUFFER_H__
+#pragma once
 
 #include "visualizer/shader.hpp"
 #include <glad/glad.h>
@@ -48,8 +47,8 @@ public:
         glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, width, height,
                     0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
 
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
@@ -65,8 +64,6 @@ public:
     void resize(int newWidth, int newHeight) {
         width = newWidth;
         height = newHeight;
-
-        std::cout << "Resizing framebuffer to " << width << "x" << height << std::endl;
 
         // Resize color texture
         glBindTexture(GL_TEXTURE_2D, texture);
@@ -87,6 +84,7 @@ public:
             resize(width_, height_);
         }
 
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
         glBindTexture(GL_TEXTURE_2D, texture);
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height,
                         GL_RGB, GL_UNSIGNED_BYTE, data);
@@ -109,22 +107,12 @@ public:
         if (width != new_width || height != new_height) {
             resize(new_width, new_height);
         }
-
         glBindTexture(GL_TEXTURE_2D, texture);
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height,
                         GL_RGB, GL_UNSIGNED_BYTE, rgb_data);
-
         glBindTexture(GL_TEXTURE_2D, depthTexture);
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height,
                         GL_DEPTH_COMPONENT, GL_FLOAT, depth_data);
-    }
-
-    float readDepthAt(int x, int y) const {
-        float depth = 0.0f;
-        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-        glReadPixels(x, height - y, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, &depth);
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        return depth;
     }
 
     void bind() const {
@@ -140,5 +128,3 @@ public:
     int getWidth()  const { return width; }
     int getHeight() const { return height; }
 };
-
-#endif // __FRAMEBUFFER_H__

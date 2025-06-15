@@ -1,12 +1,11 @@
-#ifndef __VIEWER_SHADER_H__
-#define __VIEWER_SHADER_H__
+#pragma once
 
 #include <fstream>
 #include <sstream>
 #include <iostream>
 #include <string>
 #include <Eigen/Eigen>
-#include <glad/glad.h>  
+#include <glad/glad.h>
 #include <GLFW/glfw3.h>
 
 
@@ -278,5 +277,3 @@ private:
     GLuint index_buffer = 0;
     GLuint vertex_array = 0;
 };
-
-#endif // __SHADER_H__
