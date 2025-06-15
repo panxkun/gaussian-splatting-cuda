@@ -92,7 +92,7 @@ public:
         return transform;
     }
 
-private:
+// private:
     float last_z;
     glm::vec3 intersection_center;
     glm::mat4 transform;

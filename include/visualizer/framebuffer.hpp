@@ -3,97 +3,144 @@
 
 #include "visualizer/shader.hpp"
 #include <glad/glad.h>
+#include <iostream>
 
-class FrameBuffer{
+class FrameBuffer {
 
 private:
-	GLuint fbo;
-	GLuint texture;
-	GLuint rbo;
-    int width = 0;
-    int height = 0;
+    GLuint fbo;
+    GLuint texture;        // color texture
+    GLuint depthTexture;   // depth texture
+    int width = 1;
+    int height = 1;
 
 public:
+    FrameBuffer() {
+        init(width, height);
+    }
 
-	FrameBuffer(){
+    ~FrameBuffer() {
+        glDeleteFramebuffers(1, &fbo);
+        glDeleteTextures(1, &texture);
+        glDeleteTextures(1, &depthTexture);
+    }
 
-        width = 1;
-        height = 1;
+    void init(int w, int h) {
+        width = w;
+        height = h;
 
         glGenFramebuffers(1, &fbo);
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
 
+        // --- Color texture ---
         glGenTextures(1, &texture);
         glBindTexture(GL_TEXTURE_2D, texture);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0,
+                     GL_RGB, GL_UNSIGNED_BYTE, nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D, texture, 0);
 
-        glGenRenderbuffers(1, &rbo);
-        glBindRenderbuffer(GL_RENDERBUFFER, rbo);
-        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, width, height);
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, rbo);
+        // --- Depth texture ---
+        glGenTextures(1, &depthTexture);
+        glBindTexture(GL_TEXTURE_2D, depthTexture);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, width, height,
+                    0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
 
-        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
-            std::cout << "ERROR::FRAMEBUFFER:: Framebuffer is not complete!" << std::endl;
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                               GL_TEXTURE_2D, depthTexture, 0);
+
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+            std::cerr << "ERROR::FRAMEBUFFER:: Framebuffer is not complete!" << std::endl;
+        }
 
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        glBindTexture(GL_TEXTURE_2D, 0);
-        glBindRenderbuffer(GL_RENDERBUFFER, 0);
     }
 
-    void uploadImage(const unsigned char* data, int width_, int height_){
+    void resize(int newWidth, int newHeight) {
+        width = newWidth;
+        height = newHeight;
 
-        if(width != width_ || height != height_){
-            width = width_;
-            height = height_;
-            rescaleFrameBuffer(width, height);
+        std::cout << "Resizing framebuffer to " << width << "x" << height << std::endl;
+
+        // Resize color texture
+        glBindTexture(GL_TEXTURE_2D, texture);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0,
+                     GL_RGB, GL_UNSIGNED_BYTE, nullptr);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                            GL_TEXTURE_2D, texture, 0);
+        // Resize depth texture
+        glBindTexture(GL_TEXTURE_2D, depthTexture);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, width, height,
+                     0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                           GL_TEXTURE_2D, depthTexture, 0);
+    }
+
+    void uploadImage(const unsigned char* data, int width_, int height_) {
+        if (width != width_ || height != height_) {
+            resize(width_, height_);
         }
 
         glBindTexture(GL_TEXTURE_2D, texture);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height,
+                        GL_RGB, GL_UNSIGNED_BYTE, data);
     }
 
-    ~FrameBuffer(){
-        glDeleteFramebuffers(1, &fbo);
-        glDeleteTextures(1, &texture);
-        glDeleteRenderbuffers(1, &rbo);
+    void uploadDepth(const float* depth_data, int width_, int height_) {
+        if (width != width_ || height != height_) {
+            resize(width_, height_);
+        }
+
+        std::cout << "depth 100000: " << depth_data[100000] << std::endl;
+
+        glBindTexture(GL_TEXTURE_2D, depthTexture);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height,
+                        GL_DEPTH_COMPONENT, GL_FLOAT, depth_data);
     }
 
-    GLuint getFrameTexture(){
-        return texture;
-    }
+    void uploadImageAndDepth(const unsigned char* rgb_data,
+                             const float* depth_data,
+                             int new_width,
+                             int new_height) {
+        if (width != new_width || height != new_height) {
+            resize(new_width, new_height);
+        }
 
-    void rescaleFrameBuffer(float width, float height){
         glBindTexture(GL_TEXTURE_2D, texture);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height,
+                        GL_RGB, GL_UNSIGNED_BYTE, rgb_data);
 
-        glBindRenderbuffer(GL_RENDERBUFFER, rbo);
-        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, width, height);
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, rbo);
+        glBindTexture(GL_TEXTURE_2D, depthTexture);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height,
+                        GL_DEPTH_COMPONENT, GL_FLOAT, depth_data);
     }
 
-    void bind() const{
+    float readDepthAt(int x, int y) const {
+        float depth = 0.0f;
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glReadPixels(x, height - y, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, &depth);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        return depth;
+    }
+
+    void bind() const {
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     }
 
-    void unbind() const{
+    void unbind() const {
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
-};
 
+    GLuint getFrameTexture() const { return texture; }
+    GLuint getDepthTexture() const { return depthTexture; }
+    int getWidth()  const { return width; }
+    int getHeight() const { return height; }
+};
 
 #endif // __FRAMEBUFFER_H__

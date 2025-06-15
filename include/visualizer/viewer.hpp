@@ -151,9 +151,6 @@ public:
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
         io.ConfigWindowsMoveFromTitleBarOnly = true;
-
-        // Setup Dear ImGui style
-        // ImGui::StyleColorsDark();
         ImGui::StyleColorsLight();
 
         // Setup Platform/Renderer backends
@@ -176,7 +173,6 @@ public:
         style.WindowPadding = ImVec2(6.0f, 6.0f);
         style.WindowRounding = 6.0f;
         style.WindowBorderSize = 0.0f;
-
 
         return true;
     }
@@ -343,8 +339,41 @@ public:
             
             if(screen_renderer_) {
                 torch::Tensor image_uchar = (renderOutput_.image * 255).to(torch::kCPU).to(torch::kU8);
+                torch::Tensor depth = renderOutput_.depths.to(torch::kCPU).to(torch::kFloat32).contiguous();
+
+                // std::vector<float> depth_data(renderOutput_.width * renderOutput_.height);
+                // for (int i = 0; i < renderOutput_.width * renderOutput_.height; ++i) {
+                //     depth_data[i] = 0.5;
+                // }
+
+                float minDepth = 0.1f;  // 近裁剪面
+                float maxDepth = 10.0f; // 远裁剪面
+
+                // print depth shape, datatype
+                std::cout << depth.sizes() << std::endl;
+                std::cout << "Depth data type: " << depth.dtype() << std::endl;
+                // std::cout << "Depth data: " << depth_data << std::endl;
+                
+
+                // 归一化： z_ndc = (z_view - near) / (far - near)
+                depth = torch::clamp((depth - minDepth) / (maxDepth - minDepth), 0.0f, 1.0f);
+                depth = depth.contiguous();
+
+
                 screen_renderer_->uploadImage(image_uchar.data_ptr<unsigned char>(), renderOutput_.width, renderOutput_.height);
+                screen_renderer_->uploadDepth(depth.data_ptr<float>(), renderOutput_.width, renderOutput_.height);
+                // screen_renderer_->uploadDepth(depth_data.data(), renderOutput_.width, renderOutput_.height);
                 screen_renderer_->render(shader, viewport);
+
+                // const float* depth_ptr = depth.data_ptr<float>();
+                
+                // int x = viewport.camera.prevPos.x;
+                // int y = viewport.camera.prevPos.y;
+                // screen_renderer_->framebuffer->readDepthAt(x, y);
+                // // std::cout << "Depth at (" << x << ", " << y << ") from buffer: " << screen_renderer_->framebuffer->readDepthAt(x, y) << std::endl;
+                // float d = depth_ptr[y * renderOutput_.width + x];
+                // std::cout << "Depth at (" << x << ", " << y << ") from tensor: " << d << std::endl;
+                
             }
 
             configuration();
