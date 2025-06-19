@@ -8,6 +8,7 @@ results
 .idea
 data
 *.pt
+*.py
 .venv/
 *.png
 *.sqlite
@@ -17,9 +18,3 @@ testdata
 
 *.pt
 !weights/*.pt
-
-
-libtorch
-run.sh
-*imgui.ini
-external/glad

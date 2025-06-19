@@ -77,6 +77,8 @@ set(HOST_SOURCES
         src/rasterizer_autograd.cpp
         src/viewer.cpp
         src/external/tinyply.cpp
+        src/bilateral_grid.cpp
+        src/selective_adam.cpp
 )
 
 add_library(gaussian_host STATIC ${HOST_SOURCES})
@@ -131,6 +133,9 @@ endif()
 
 set(KERNEL_SOURCES
         kernels/ssim.cu
+        kernels/bilateral_grid_forward.cu
+        kernels/bilateral_grid_backward.cu
+        kernels/bilateral_grid_tv.cu
 )
 
 add_library(gaussian_kernels STATIC ${KERNEL_SOURCES})

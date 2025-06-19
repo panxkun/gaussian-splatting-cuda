@@ -1,5 +1,4 @@
 #include "core/trainer.hpp"
-#include "core/image_io.hpp"
 #include "core/rasterizer.hpp"
 #include "kernels/fused_ssim.cuh"
 #include <chrono>
@@ -10,32 +9,63 @@
 
 namespace gs {
 
-    // Helper function to convert string render mode to enum
-    inline RenderMode stringToRenderMode(const std::string& mode) {
-        if (mode == "RGB")
-            return RenderMode::RGB;
-        else if (mode == "D")
-            return RenderMode::D;
-        else if (mode == "ED")
-            return RenderMode::ED;
-        else if (mode == "RGB_D")
-            return RenderMode::RGB_D;
-        else if (mode == "RGB_ED")
-            return RenderMode::RGB_ED;
-        else
-            throw std::runtime_error("Invalid render mode: " + mode);
+    static inline torch::Tensor ensure_4d(const torch::Tensor& image) {
+        return image.dim() == 3 ? image.unsqueeze(0) : image;
     }
 
-    // Helper function to check if render mode includes depth
-    inline bool renderModeHasDepth(RenderMode mode) {
-        return mode != RenderMode::RGB;
+    void Trainer::initialize_bilateral_grid() {
+        if (!params_.optimization.use_bilateral_grid) {
+            return;
+        }
+
+        bilateral_grid_ = std::make_unique<gs::BilateralGrid>(
+            train_dataset_size_,
+            params_.optimization.bilateral_grid_X,
+            params_.optimization.bilateral_grid_Y,
+            params_.optimization.bilateral_grid_W);
+
+        bilateral_grid_optimizer_ = std::make_unique<torch::optim::Adam>(
+            std::vector<torch::Tensor>{bilateral_grid_->parameters()},
+            torch::optim::AdamOptions(params_.optimization.bilateral_grid_lr)
+                .eps(1e-15));
     }
 
-    // Helper function to check if render mode includes RGB
-    inline bool renderModeHasRGB(RenderMode mode) {
-        return mode == RenderMode::RGB ||
-               mode == RenderMode::RGB_D ||
-               mode == RenderMode::RGB_ED;
+    torch::Tensor Trainer::compute_loss(const RenderOutput& render_output,
+                                        const torch::Tensor& gt_image,
+                                        const SplatData& splatData,
+                                        const param::OptimizationParameters& opt_params) {
+        // Ensure images have same dimensions
+        torch::Tensor rendered = render_output.image;
+        torch::Tensor gt = gt_image;
+
+        // Ensure both tensors are 4D (batch, height, width, channels)
+        rendered = rendered.dim() == 3 ? rendered.unsqueeze(0) : rendered;
+        gt = gt.dim() == 3 ? gt.unsqueeze(0) : gt;
+
+        TORCH_CHECK(rendered.sizes() == gt.sizes(), "ERROR: size mismatch – rendered ", rendered.sizes(), " vs. ground truth ", gt.sizes());
+
+        // Base loss: L1 + SSIM
+        auto l1_loss = torch::l1_loss(rendered, gt);
+        auto ssim_loss = 1.f - fused_ssim(rendered, gt, "valid", /*train=*/true);
+        torch::Tensor loss = (1.f - opt_params.lambda_dssim) * l1_loss +
+                             opt_params.lambda_dssim * ssim_loss;
+
+        // Regularization terms
+        if (opt_params.opacity_reg > 0.0f) {
+            auto opacity_l1 = torch::abs(splatData.get_opacity()).mean();
+            loss += opt_params.opacity_reg * opacity_l1;
+        }
+
+        if (opt_params.scale_reg > 0.0f) {
+            auto scale_l1 = torch::abs(splatData.get_scaling()).mean();
+            loss += opt_params.scale_reg * scale_l1;
+        }
+        // Total variation loss for bilateral grid
+        if (params_.optimization.use_bilateral_grid) {
+            loss += params_.optimization.tv_loss_weight * bilateral_grid_->tv_loss();
+        }
+
+        return loss;
     }
 
     Trainer::Trainer(std::shared_ptr<CameraDataset> dataset,
@@ -69,9 +99,11 @@ namespace gs {
         }
 
         train_dataset_size_ = train_dataset_->size().value();
-        val_dataset_size_ = val_dataset_ ? val_dataset_->size().value() : 0;
 
         strategy_->initialize(params.optimization);
+
+        // Initialize bilateral grid if enabled
+        initialize_bilateral_grid();
 
         background_ = torch::tensor({0.f, 0.f, 0.f}, torch::TensorOptions().dtype(torch::kFloat32));
         background_ = background_.to(torch::kCUDA);
@@ -80,18 +112,8 @@ namespace gs {
             params.optimization.iterations,
             /*bar_width=*/100);
 
-        // Only initialize evaluation components if needed
-        if (params.optimization.enable_eval) {
-            psnr_metric_ = std::make_unique<metrics::PSNR>(1.0f);
-            ssim_metric_ = std::make_unique<metrics::SSIM>(11, 3);
-
-            std::filesystem::path lpips_path = params.dataset.output_path.parent_path() / "weights" / "lpips_vgg.pt";
-            if (!std::filesystem::exists(lpips_path)) {
-                lpips_path = "weights/lpips_vgg.pt";
-            }
-            lpips_metric_ = std::make_unique<metrics::LPIPS>(lpips_path.string());
-            metrics_reporter_ = std::make_unique<metrics::MetricsReporter>(params.dataset.output_path);
-        }
+        // Initialize the evaluator - it handles all metrics internally
+        evaluator_ = std::make_unique<metrics::MetricsEvaluator>(params);
 
         // Print render mode configuration
         std::cout << "Render mode: " << params.optimization.render_mode << std::endl;
@@ -112,348 +134,137 @@ namespace gs {
         }
     }
 
-    auto Trainer::make_train_dataloader(int workers) const {
-        return create_dataloader_from_dataset(train_dataset_, workers);
-    }
-
-    auto Trainer::make_val_dataloader(int workers) const {
-        return create_dataloader_from_dataset(val_dataset_, workers);
-    }
-
-    void Trainer::train() {
-        int iter = 1;
-        int epochs_needed = (params_.optimization.iterations + train_dataset_size_ - 1) / train_dataset_size_;
-
-        auto train_dataloader = make_train_dataloader();
-
-        // Convert string render mode to enum once
-        RenderMode render_mode = stringToRenderMode(params_.optimization.render_mode);
-        const bool has_rgb = renderModeHasRGB(render_mode);
-        const bool has_depth = renderModeHasDepth(render_mode);
-
-        for (int epoch = 0; epoch < epochs_needed && iter <= params_.optimization.iterations; ++epoch) {
-            for (auto& batch : *train_dataloader) {
-
-                auto camera_with_image = batch[0].data;
-                Camera* cam = camera_with_image.camera;
-                torch::Tensor gt_image = std::move(camera_with_image.image);
-
-                auto render_fn = [this, &cam, render_mode]() {
-                    return gs::rasterize(
-                        *cam,
-                        strategy_->get_model(),
-                        background_,
-                        1.0f,
-                        false,
-                        false,
-                        render_mode
-                    );
-                };
-
-                RenderOutput r_output;
-
-                if (viewer_){
-                    std::lock_guard<std::mutex> lock(viewer_->splat_mtx_);
-                    r_output = render_fn();
-                } else {
-                    r_output = render_fn();
-                }
-
-                torch::Tensor loss;
-                
-                // Only process RGB if render mode includes it
-                if (has_rgb) {
-                    if (r_output.image.dim() == 3)
-                        r_output.image = r_output.image.unsqueeze(0);
-
-                    if (gt_image.dim() == 3)
-                        gt_image = gt_image.unsqueeze(0);
-
-                    if (r_output.image.sizes() != gt_image.sizes()) {
-                        std::cerr << "ERROR: size mismatch – rendered " << r_output.image.sizes()
-                                  << " vs. ground truth " << gt_image.sizes() << '\n';
-                        throw std::runtime_error("Image size mismatch");
-                    }
-
-                    // Base loss computation
-                    auto l1l = torch::l1_loss(r_output.image.squeeze(0), gt_image.squeeze(0));
-                    auto ssim_loss = fused_ssim(r_output.image, gt_image, "same", /*train=*/true);
-                    loss = (1.f - params_.optimization.lambda_dssim) * l1l +
-                           params_.optimization.lambda_dssim * (1.f - ssim_loss);
-
-                    // Add opacity regularization
-                    if (params_.optimization.opacity_reg > 0.0f) {
-                        auto opacity_l1 = torch::abs(strategy_->get_model().get_opacity()).mean();
-                        loss += params_.optimization.opacity_reg * opacity_l1;
-                    }
-
-                    // Add scale regularization
-                    if (params_.optimization.scale_reg > 0.0f) {
-                        auto scale_l1 = torch::abs(strategy_->get_model().get_scaling()).mean();
-                        loss += params_.optimization.scale_reg * scale_l1;
-                    }
-                } else {
-                    // For depth-only modes, create a dummy loss or implement depth supervision
-                    std::cerr << "Warning: Training with depth-only mode without RGB loss. ";
-                    std::cerr << "Consider implementing depth supervision or switching to RGB_D/RGB_ED mode.\n";
-
-                    // Create a small dummy loss to allow gradient computation
-                    loss = torch::zeros({1}, torch::kFloat32).to(torch::kCUDA);
-                    loss.requires_grad_(true);
-                }
-                
-                loss.backward();
-
-                {
-                    torch::NoGradGuard no_grad;
-
-                    // Simple evaluation - just print without progress bar interaction
-                    if (params_.optimization.enable_eval) {
-                        for (size_t eval_step : params_.optimization.eval_steps) {
-                            if (iter == static_cast<int>(eval_step)) {
-                                std::cout << std::endl;
-                                std::cout << "[Evaluation at step " << iter << "]" << std::endl;
-                                auto metrics = evaluate(iter);
-                                std::cout << metrics.to_string() << std::endl;
-                            }
-                        }
-                    }
-
-                    // Save model at specified steps
-                    for (size_t save_step : params_.optimization.save_steps) {
-                        if (iter == static_cast<int>(save_step) && iter != params_.optimization.iterations) {
-                            strategy_->get_model().save_ply(params_.dataset.output_path, iter, /*join=*/false);
-                        }
-                    }
-                    
-                    auto do_strategy = [&]() {
-                        strategy_->post_backward(iter, r_output);
-                        strategy_->step(iter);
-                    };
-                    
-                    if (viewer_) {
-                        std::lock_guard<std::mutex> lock(viewer_->splat_mtx_);
-                        do_strategy();
-                    } else {
-                        do_strategy();
-                    }
-                }
-
-                const bool is_densifying = (iter < params_.optimization.stop_densify &&
-                                            iter > params_.optimization.start_densify &&
-                                            iter % params_.optimization.growth_interval == 0);
-
-                progress_->update(iter, loss.item<float>(), static_cast<int>(strategy_->get_model().size()), is_densifying);
-
-                if (viewer_) {
-
-                    if(viewer_->info_){
-                        auto &info = viewer_->info_;
-                        std::lock_guard<std::mutex> lock(viewer_->info_->mtx);
-                        info->updateProgress(iter, params_.optimization.iterations);
-                        info->updateNumSplats(static_cast<size_t>(strategy_->get_model().size()));
-                        info->updateLoss(loss.item<float>());
-                    }
-
-                    if(viewer_->notifier_){
-                        auto &notifier = viewer_->notifier_;
-                        std::unique_lock<std::mutex> lock(notifier->mtx);
-                        notifier->cv.wait(lock, [&notifier] { return notifier->ready;});
-                    }
-                }
-
-                if (iter == params_.optimization.iterations) {
-                    break;
-                }
-
-                ++iter;
-            }
-
-            train_dataloader = make_train_dataloader();
-        }
-
-        // Final evaluation and save final depth
-        if (params_.optimization.enable_eval) {
-            progress_->complete();
-            std::cout << "\n[Final Evaluation]" << std::endl;
-            auto final_metrics = evaluate(iter);
-            std::cout << final_metrics.to_string() << std::endl;
-            metrics_reporter_->save_report();
-        } else {
-            progress_->complete();
-        }
-
-        strategy_->get_model().save_ply(params_.dataset.output_path, iter, /*join=*/true);
-        progress_->print_final_summary(static_cast<int>(strategy_->get_model().size()));
-
-    }
-
-    torch::Tensor Trainer::apply_depth_colormap(const torch::Tensor& depth_normalized) {
-        // depth_normalized should be [H, W] with values in [0, 1]
-        auto H = depth_normalized.size(0);
-        auto W = depth_normalized.size(1);
-
-        // Create RGB tensor
-        auto colormap = torch::zeros({3, H, W}, torch::kFloat32);
-
-        // Simple jet-like colormap
-        auto depth_flat = depth_normalized.flatten();
-        auto r = colormap[0].flatten();
-        auto g = colormap[1].flatten();
-        auto b = colormap[2].flatten();
-
-        for (int i = 0; i < depth_flat.size(0); i++) {
-            float val = depth_flat[i].item<float>();
-
-            // Jet colormap approximation
-            if (val < 0.25f) {
-                r[i] = 0.0f;
-                g[i] = 4.0f * val;
-                b[i] = 1.0f;
-            } else if (val < 0.5f) {
-                r[i] = 0.0f;
-                g[i] = 1.0f;
-                b[i] = 1.0f - 4.0f * (val - 0.25f);
-            } else if (val < 0.75f) {
-                r[i] = 4.0f * (val - 0.5f);
-                g[i] = 1.0f;
-                b[i] = 0.0f;
-            } else {
-                r[i] = 1.0f;
-                g[i] = 1.0f - 4.0f * (val - 0.75f);
-                b[i] = 0.0f;
-            }
-        }
-
-        return colormap;
-    }
-
-    metrics::EvalMetrics Trainer::evaluate(int iteration) {
-        metrics::EvalMetrics result;
-        result.num_gaussians = static_cast<int>(strategy_->get_model().size());
-        result.iteration = iteration;
-
-        auto val_dataloader = make_val_dataloader();
-
-        std::vector<float> psnr_values, ssim_values, lpips_values;
-        auto start_time = std::chrono::steady_clock::now();
-
-        // Create directory for evaluation images
-        std::filesystem::path eval_dir = params_.dataset.output_path /
-                                         ("eval_step_" + std::to_string(iteration));
-        std::filesystem::create_directories(eval_dir);
-
-        // Convert string render mode to enum
-        RenderMode render_mode = stringToRenderMode(params_.optimization.render_mode);
-        const bool has_rgb = renderModeHasRGB(render_mode);
-        const bool has_depth = renderModeHasDepth(render_mode);
-
-        // Create subdirectory for depth maps only if we're saving depth
-        std::filesystem::path depth_dir;
-        if (has_depth) {
-            depth_dir = eval_dir / "depth";
-            std::filesystem::create_directories(depth_dir);
-        }
-
-        int image_idx = 0;
-        for (auto& batch : *val_dataloader) {
-            auto camera_with_image = batch[0].data;
-            Camera* cam = camera_with_image.camera;
-            torch::Tensor gt_image = std::move(camera_with_image.image);
-
-            // Render with configured mode
-            auto r_output = gs::rasterize(
+    bool Trainer::train_step(int iter, Camera* cam, torch::Tensor gt_image, RenderMode render_mode) {
+        // Use the render mode from parameters
+        auto render_fn = [this, &cam, render_mode]() {
+            return gs::rasterize(
                 *cam,
                 strategy_->get_model(),
                 background_,
                 1.0f,
                 false,
                 false,
-                render_mode);
+                render_mode
+            );
+        };
 
-            // Only compute metrics if we have RGB output
-            if (has_rgb) {
-                // Ensure correct dimensions
-                if (r_output.image.dim() == 3)
-                    r_output.image = r_output.image.unsqueeze(0);
-                if (gt_image.dim() == 3)
-                    gt_image = gt_image.unsqueeze(0);
+        RenderOutput r_output;
 
-                // Clamp rendered image to [0, 1]
-                r_output.image = torch::clamp(r_output.image, 0.0, 1.0);
+        if (viewer_){
+            std::lock_guard<std::mutex> lock(viewer_->splat_mtx_);
+            r_output = render_fn();
+        } else {
+            r_output = render_fn();
+        }
 
-                // Compute metrics
-                float psnr = psnr_metric_->compute(r_output.image, gt_image);
-                float ssim = ssim_metric_->compute(r_output.image, gt_image);
-                float lpips = lpips_metric_->compute(r_output.image, gt_image);
+        // Apply bilateral grid if enabled
+        if (bilateral_grid_ && params_.optimization.use_bilateral_grid) {
+            r_output.image = bilateral_grid_->apply(r_output.image, cam->uid());
+        }
+        // Compute loss using the factored-out function
+        torch::Tensor loss = compute_loss(r_output,
+                                          gt_image,
+                                          strategy_->get_model(),
+                                          params_.optimization);
 
-                psnr_values.push_back(psnr);
-                ssim_values.push_back(ssim);
-                lpips_values.push_back(lpips);
+        loss.backward();
 
-                // Save side-by-side RGB images
-                save_image(eval_dir / (std::to_string(image_idx) + ".png"),
-                           {gt_image.squeeze(0), r_output.image.squeeze(0)},
-                           true, // horizontal
-                           4);   // separator width
+        {
+            torch::NoGradGuard no_grad;
+
+            // Clean evaluation - let the evaluator handle everything
+            if (evaluator_->is_enabled() && evaluator_->should_evaluate(iter)) {
+                evaluator_->print_evaluation_header(iter);
+                auto metrics = evaluator_->evaluate(iter,
+                                                    strategy_->get_model(),
+                                                    val_dataset_,
+                                                    background_);
+                std::cout << metrics.to_string() << std::endl;
             }
 
-            // Only save depth if enabled and render mode includes depth
-            if (has_depth) {
-                if (r_output.depth.defined()) {
-                    auto depth_vis = r_output.depth.clone().squeeze(0).to(torch::kCPU); // [H, W]
-
-                    // Normalize depth
-                    auto min_depth = depth_vis.min();
-                    auto max_depth = depth_vis.max();
-                    auto depth_normalized = (depth_vis - min_depth) / (max_depth - min_depth).clamp_min(1e-10);
-
-                    // Apply colormap
-                    auto depth_colormap = apply_depth_colormap(depth_normalized);
-
-                    // Save both grayscale and colormap versions
-                    auto depth_gray_rgb = depth_normalized.unsqueeze(0).repeat({3, 1, 1});
-                    save_image(depth_dir / (std::to_string(image_idx) + "_gray.png"), depth_gray_rgb);
-                    save_image(depth_dir / (std::to_string(image_idx) + "_color.png"), depth_colormap);
-
-                    // Optionally save RGB + Depth side by side (only if we have RGB)
-                    if (has_rgb) {
-                        save_image(depth_dir / (std::to_string(image_idx) + "_rgb_depth.png"),
-                                   {r_output.image.squeeze(0), depth_colormap},
-                                   true, // horizontal
-                                   4);   // separator width
-                    }
+            // Save model at specified steps
+            for (size_t save_step : params_.optimization.save_steps) {
+                if (iter == static_cast<int>(save_step) && iter != params_.optimization.iterations) {
+                    const bool join_threads = (iter == params_.optimization.save_steps.back());
+                    strategy_->get_model().save_ply(params_.dataset.output_path, iter, /*join=*/join_threads);
                 }
             }
 
-            image_idx++;
+            auto do_strategy = [&]() {
+                strategy_->post_backward(iter, r_output);
+                strategy_->step(iter);
+            };
+
+            if (viewer_) {
+                std::lock_guard<std::mutex> lock(viewer_->splat_mtx_);
+                do_strategy();
+            } else {
+                do_strategy();
+            }
+
+            if (params_.optimization.use_bilateral_grid) {
+                bilateral_grid_optimizer_->step();
+                bilateral_grid_optimizer_->zero_grad(true);
+            }
         }
 
-        auto end_time = std::chrono::steady_clock::now();
-        auto elapsed = std::chrono::duration<float>(end_time - start_time).count();
+        progress_->update(iter, loss.item<float>(),
+                          static_cast<int>(strategy_->get_model().size()),
+                          strategy_->is_refining(iter));
 
-        // Compute averages only if we have RGB metrics
-        if (has_rgb && !psnr_values.empty()) {
-            result.psnr = std::accumulate(psnr_values.begin(), psnr_values.end(), 0.0f) / psnr_values.size();
-            result.ssim = std::accumulate(ssim_values.begin(), ssim_values.end(), 0.0f) / ssim_values.size();
-            result.lpips = std::accumulate(lpips_values.begin(), lpips_values.end(), 0.0f) / lpips_values.size();
-        } else {
-            // Set default values for depth-only modes
-            result.psnr = 0.0f;
-            result.ssim = 0.0f;
-            result.lpips = 0.0f;
+        if (viewer_) {
+
+            if(viewer_->info_){
+                auto &info = viewer_->info_;
+                std::lock_guard<std::mutex> lock(viewer_->info_->mtx);
+                info->updateProgress(iter, params_.optimization.iterations);
+                info->updateNumSplats(static_cast<size_t>(strategy_->get_model().size()));
+                info->updateLoss(loss.item<float>());
+            }
+
+            if(viewer_->notifier_){
+                auto &notifier = viewer_->notifier_;
+                std::unique_lock<std::mutex> lock(notifier->mtx);
+                notifier->cv.wait(lock, [&notifier] { return notifier->ready;});
+            }
         }
-        result.elapsed_time = elapsed / val_dataset_size_;
+                
+        // Return true if we should continue training
+        return iter < params_.optimization.iterations;
+    }
 
-        // Add metrics to reporter
-        metrics_reporter_->add_metrics(result);
+    void Trainer::train() {
+        int iter = 1;
+        const int epochs_needed = (params_.optimization.iterations + train_dataset_size_ - 1) / train_dataset_size_;
 
-        std::cout << "Saved " << image_idx << " evaluation images to: " << eval_dir << std::endl;
-        if (has_depth) {
-            std::cout << "Saved depth maps to: " << depth_dir << std::endl;
+        const int num_workers = 4;
+
+        const RenderMode render_mode = stringToRenderMode(params_.optimization.render_mode);
+
+        bool should_continue = true;
+
+        for (int epoch = 0; epoch < epochs_needed && should_continue; ++epoch) {
+            auto train_dataloader = create_dataloader_from_dataset(train_dataset_, num_workers);
+
+            for (auto& batch : *train_dataloader) {
+                auto camera_with_image = batch[0].data;
+                Camera* cam = camera_with_image.camera;
+                torch::Tensor gt_image = std::move(camera_with_image.image);
+
+                should_continue = train_step(iter, cam, gt_image, render_mode);
+
+                if (!should_continue) {
+                    break;
+                }
+
+                ++iter;
+            }
         }
 
-        return result;
+        strategy_->get_model().save_ply(params_.dataset.output_path, iter, /*join=*/true);
+        progress_->complete();
+        evaluator_->save_report();
+        progress_->print_final_summary(static_cast<int>(strategy_->get_model().size()));
     }
 
 } // namespace gs

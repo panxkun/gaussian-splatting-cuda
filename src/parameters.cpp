@@ -2,7 +2,10 @@
 // All rights reserved. Derived from 3D Gaussian Splatting for Real-Time Radiance Field Rendering software by Inria and MPII.
 
 #include "core/parameters.hpp"
+#include <chrono>
+#include <ctime>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <nlohmann/json.hpp>
 #include <sstream>
@@ -90,24 +93,34 @@ namespace gs {
                 };
 
                 const std::vector<ParamInfo> expected_params = {
-                    ParamInfo{"iterations", defaults.iterations, "Total number of training iterations"},
-                    ParamInfo{"means_lr", defaults.means_lr, "Initial learning rate for position updates"},
-                    ParamInfo{"shs_lr", defaults.shs_lr, "Learning rate for spherical harmonics updates"},
-                    ParamInfo{"opacity_lr", defaults.opacity_lr, "Learning rate for opacity updates"},
-                    ParamInfo{"scaling_lr", defaults.scaling_lr, "Learning rate for scaling updates"},
-                    ParamInfo{"rotation_lr", defaults.rotation_lr, "Learning rate for rotation updates"},
-                    ParamInfo{"lambda_dssim", defaults.lambda_dssim, "DSSIM loss weight"},
-                    ParamInfo{"min_opacity", defaults.min_opacity, "Minimum opacity threshold"},
-                    ParamInfo{"growth_interval", defaults.growth_interval, "Interval between densification steps"},
-                    ParamInfo{"start_densify", defaults.start_densify, "Starting iteration for densification"},
-                    ParamInfo{"stop_densify", defaults.stop_densify, "Ending iteration for densification"},
-                    ParamInfo{"grad_threshold", defaults.grad_threshold, "Gradient threshold for densification"},
-                    ParamInfo{"opacity_reg", defaults.opacity_reg, "Opacity L1 regularization weight"},
-                    ParamInfo{"scale_reg", defaults.scale_reg, "Scale L1 regularization weight"},
-                    ParamInfo{"sh_degree", defaults.sh_degree, "Spherical harmonics degree"},
-                    ParamInfo{"max_cap", defaults.max_cap, "Maximum number of Gaussians for MCMC strategy"},
-                    ParamInfo{"render_mode", defaults.render_mode, "Render mode: RGB, D, ED, RGB_D, RGB_ED"},
-                };
+                    {"iterations", defaults.iterations, "Total number of training iterations"},
+                    {"means_lr", defaults.means_lr, "Initial learning rate for position updates"},
+                    {"shs_lr", defaults.shs_lr, "Learning rate for spherical harmonics updates"},
+                    {"opacity_lr", defaults.opacity_lr, "Learning rate for opacity updates"},
+                    {"scaling_lr", defaults.scaling_lr, "Learning rate for scaling updates"},
+                    {"rotation_lr", defaults.rotation_lr, "Learning rate for rotation updates"},
+                    {"lambda_dssim", defaults.lambda_dssim, "DSSIM loss weight"},
+                    {"min_opacity", defaults.min_opacity, "Minimum opacity threshold"},
+                    {"refine_every", defaults.refine_every, "Interval between densification steps"},
+                    {"start_refine", defaults.start_refine, "Starting iteration for densification"},
+                    {"stop_refine", defaults.stop_refine, "Ending iteration for densification"},
+                    {"grad_threshold", defaults.grad_threshold, "Gradient threshold for densification"},
+                    {"opacity_reg", defaults.opacity_reg, "Opacity L1 regularization weight"},
+                    {"scale_reg", defaults.scale_reg, "Scale L1 regularization weight"},
+                    {"init_opacity", defaults.init_opacity, "Initial opacity value for new Gaussians"},
+                    {"init_scaling", defaults.init_scaling, "Initial scaling value for new Gaussians"},
+                    {"sh_degree", defaults.sh_degree, "Spherical harmonics degree"},
+                    {"max_cap", defaults.max_cap, "Maximum number of Gaussians for MCMC strategy"},
+                    {"render_mode", defaults.render_mode, "Render mode: RGB, D, ED, RGB_D, RGB_ED"},
+                    {"use_bilateral_grid", defaults.use_bilateral_grid, "Enable bilateral grid for appearance modeling"},
+                    {"bilateral_grid_X", defaults.bilateral_grid_X, "Bilateral grid X dimension"},
+                    {"bilateral_grid_Y", defaults.bilateral_grid_Y, "Bilateral grid Y dimension"},
+                    {"bilateral_grid_W", defaults.bilateral_grid_W, "Bilateral grid W dimension"},
+                    {"bilateral_grid_lr", defaults.bilateral_grid_lr, "Learning rate for bilateral grid"},
+                    {"tv_loss_weight", defaults.tv_loss_weight, "Weight for total variation loss"},
+                    {"steps_scaler", defaults.steps_scaler, "Scales the training steps and values"},
+                    {"sh_degree_interval", defaults.sh_degree_interval, "Interval for increasing SH degree"},
+                    {"selective_adam", defaults.selective_adam, "Selective Adam optimizer flag"}};
 
                 // Check all expected parameters
                 for (const auto& param : expected_params) {
@@ -230,9 +243,9 @@ namespace gs {
             params.rotation_lr = json["rotation_lr"];
             params.lambda_dssim = json["lambda_dssim"];
             params.min_opacity = json["min_opacity"];
-            params.growth_interval = json["growth_interval"];
-            params.start_densify = json["start_densify"];
-            params.stop_densify = json["stop_densify"];
+            params.refine_every = json["refine_every"];
+            params.start_refine = json["start_refine"];
+            params.stop_refine = json["stop_refine"];
             params.grad_threshold = json["grad_threshold"];
             params.sh_degree = json["sh_degree"];
 
@@ -241,6 +254,12 @@ namespace gs {
             }
             if (json.contains("scale_reg")) {
                 params.scale_reg = json["scale_reg"];
+            }
+            if (json.contains("init_opacity")) {
+                params.init_opacity = json["init_opacity"];
+            }
+            if (json.contains("init_scaling")) {
+                params.init_scaling = json["init_scaling"];
             }
             if (json.contains("max_cap")) {
                 params.max_cap = json["max_cap"];
@@ -272,6 +291,33 @@ namespace gs {
                     params.save_steps.push_back(step.get<size_t>());
                 }
             }
+            if (json.contains("use_bilateral_grid")) {
+                params.use_bilateral_grid = json["use_bilateral_grid"];
+            }
+            if (json.contains("bilateral_grid_X")) {
+                params.bilateral_grid_X = json["bilateral_grid_X"];
+            }
+            if (json.contains("bilateral_grid_Y")) {
+                params.bilateral_grid_Y = json["bilateral_grid_Y"];
+            }
+            if (json.contains("bilateral_grid_W")) {
+                params.bilateral_grid_W = json["bilateral_grid_W"];
+            }
+            if (json.contains("bilateral_grid_lr")) {
+                params.bilateral_grid_lr = json["bilateral_grid_lr"];
+            }
+            if (json.contains("tv_loss_weight")) {
+                params.tv_loss_weight = json["tv_loss_weight"];
+            }
+            if (json.contains("steps_scaler")) {
+                params.steps_scaler = json["steps_scaler"];
+            }
+            if (json.contains("sh_degree_interval")) {
+                params.sh_degree_interval = json["sh_degree_interval"];
+            }
+            if (json.contains("selective_adam")) {
+                params.selective_adam = json["selective_adam"];
+            }
             return params;
         }
 
@@ -293,5 +339,79 @@ namespace gs {
                 params.resolution = json["resolution"];
             return params;
         }
+
+        /**
+         * @brief Save full training parameters (dataset + optimization) to JSON
+         * @param params The full training parameters
+         * @param output_path Path to the output directory
+         */
+        void save_training_parameters_to_json(const TrainingParameters& params,
+                                              const std::filesystem::path& output_path) {
+            nlohmann::json json;
+
+            // Dataset configuration
+            json["dataset"]["data_path"] = params.dataset.data_path.string();
+            json["dataset"]["output_path"] = params.dataset.output_path.string();
+            json["dataset"]["images"] = params.dataset.images;
+            json["dataset"]["resolution"] = params.dataset.resolution;
+            json["dataset"]["test_every"] = params.dataset.test_every;
+
+            // Optimization configuration
+            nlohmann::json opt_json;
+            opt_json["iterations"] = params.optimization.iterations;
+            opt_json["means_lr"] = params.optimization.means_lr;
+            opt_json["shs_lr"] = params.optimization.shs_lr;
+            opt_json["opacity_lr"] = params.optimization.opacity_lr;
+            opt_json["scaling_lr"] = params.optimization.scaling_lr;
+            opt_json["rotation_lr"] = params.optimization.rotation_lr;
+            opt_json["lambda_dssim"] = params.optimization.lambda_dssim;
+            opt_json["min_opacity"] = params.optimization.min_opacity;
+            opt_json["refine_every"] = params.optimization.refine_every;
+            opt_json["start_refine"] = params.optimization.start_refine;
+            opt_json["stop_refine"] = params.optimization.stop_refine;
+            opt_json["grad_threshold"] = params.optimization.grad_threshold;
+            opt_json["sh_degree"] = params.optimization.sh_degree;
+            opt_json["opacity_reg"] = params.optimization.opacity_reg;
+            opt_json["scale_reg"] = params.optimization.scale_reg;
+            opt_json["init_opacity"] = params.optimization.init_opacity;
+            opt_json["init_scaling"] = params.optimization.init_scaling;
+            opt_json["max_cap"] = params.optimization.max_cap;
+            opt_json["render_mode"] = params.optimization.render_mode;
+            opt_json["eval_steps"] = params.optimization.eval_steps;
+            opt_json["save_steps"] = params.optimization.save_steps;
+            opt_json["enable_eval"] = params.optimization.enable_eval;
+            opt_json["enable_save_eval_images"] = params.optimization.enable_save_eval_images;
+            opt_json["use_bilateral_grid"] = params.optimization.use_bilateral_grid;
+            opt_json["bilateral_grid_X"] = params.optimization.bilateral_grid_X;
+            opt_json["bilateral_grid_Y"] = params.optimization.bilateral_grid_Y;
+            opt_json["bilateral_grid_W"] = params.optimization.bilateral_grid_W;
+            opt_json["bilateral_grid_lr"] = params.optimization.bilateral_grid_lr;
+            opt_json["tv_loss_weight"] = params.optimization.tv_loss_weight;
+            opt_json["steps_scaler"] = params.optimization.steps_scaler;
+            opt_json["sh_degree_interval"] = params.optimization.sh_degree_interval;
+            opt_json["selective_adam"] = params.optimization.selective_adam;
+
+            json["optimization"] = opt_json;
+
+            // Add timestamp
+            auto now = std::chrono::system_clock::now();
+            auto time_t = std::chrono::system_clock::to_time_t(now);
+            std::stringstream ss;
+            ss << std::put_time(std::localtime(&time_t), "%Y-%m-%d %H:%M:%S");
+            json["timestamp"] = ss.str();
+
+            // Save to file
+            std::filesystem::path filepath = output_path / "training_config.json";
+            std::ofstream file(filepath);
+            if (!file.is_open()) {
+                throw std::runtime_error("Could not open file for writing: " + filepath.string());
+            }
+
+            file << json.dump(4); // Pretty print with 4 spaces
+            file.close();
+
+            std::cout << "Saved training configuration to: " << filepath << std::endl;
+        }
+
     } // namespace param
 } // namespace gs

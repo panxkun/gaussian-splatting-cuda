@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/istrategy.hpp"
+#include "core/selective_adam.hpp"
 #include <memory>
 #include <torch/torch.h>
 
@@ -17,6 +18,7 @@ public:
     // IStrategy interface implementation
     void initialize(const gs::param::OptimizationParameters& optimParams) override;
     void post_backward(int iter, gs::RenderOutput& render_output) override;
+    bool is_refining(int iter) const override;
     void step(int iter) override;
     SplatData& get_model() override { return _splat_data; }
     const SplatData& get_model() const override { return _splat_data; }
@@ -30,13 +32,7 @@ private:
               gamma_(gamma),
               param_group_index_(param_group_index) {}
 
-        void step() {
-            // Only update specific parameter group
-            auto& group = optimizer_.param_groups()[param_group_index_];
-            auto& options = static_cast<torch::optim::AdamOptions&>(group.options());
-            double current_lr = options.lr();
-            options.lr(current_lr * gamma_);
-        }
+        void step();
 
     private:
         torch::optim::Optimizer& optimizer_;
@@ -49,26 +45,23 @@ private:
     int relocate_gs();
     int add_new_gs();
     void inject_noise();
-    void update_optimizer_for_relocate(torch::optim::Adam* optimizer,
+    void update_optimizer_for_relocate(torch::optim::Optimizer* optimizer,
                                        const torch::Tensor& sampled_indices,
                                        const torch::Tensor& dead_indices,
                                        int param_position);
 
     // Member variables
-    std::unique_ptr<torch::optim::Adam> _optimizer;
+    std::unique_ptr<torch::optim::Optimizer> _optimizer;
     std::unique_ptr<ExponentialLR> _scheduler;
     SplatData _splat_data;
-    std::unique_ptr<gs::param::OptimizationParameters> _params;
+    std::unique_ptr<const gs::param::OptimizationParameters> _params;
 
     // MCMC specific parameters
-    int _cap_max = 1000000;
     const float _noise_lr = 5e5;
-    int _refine_start_iter = 500;
-    int _refine_stop_iter = 25000;
-    int _refine_every = 100;
-    float _min_opacity = 0.005f;
-    bool _verbose = false;
 
     // State variables
     torch::Tensor _binoms;
+
+    // SelectiveAdam support
+    torch::Tensor _last_visibility_mask;
 };

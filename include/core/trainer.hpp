@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/bilateral_grid.hpp"
 #include "core/dataset.hpp"
 #include "core/istrategy.hpp"
 #include "core/metrics.hpp"
@@ -30,22 +31,23 @@ namespace gs {
         ~Trainer();
 
         // Main training method
-        virtual void train();
-
-        // Evaluation method
-        metrics::EvalMetrics evaluate(int iteration);
-
-        // Get the strategy (for external access if needed)
-        IStrategy& get_strategy() { return *strategy_; }
+        void train();
+        
+        // just for viewer to get model
         const IStrategy& get_strategy() const { return *strategy_; }
 
-        // Get the training parameters
-        const param::TrainingParameters& get_parameters() const { return params_; }
+    private:
+        // Protected method for processing a single training step
+        // Returns true if training should continue
+        bool train_step(int iter, Camera* cam, torch::Tensor gt_image, RenderMode render_mode);
 
-    protected:
-        // Helper to create fresh dataloaders
-        auto make_train_dataloader(int workers = 4) const;
-        auto make_val_dataloader(int workers = 1) const;
+        // Protected method for computing loss
+        torch::Tensor compute_loss(const RenderOutput& render_output,
+                                   const torch::Tensor& gt_image,
+                                   const SplatData& splatData,
+                                   const param::OptimizationParameters& opt_params);
+
+        void initialize_bilateral_grid();
 
         // Member variables
         std::shared_ptr<CameraDataset> train_dataset_;
@@ -55,20 +57,16 @@ namespace gs {
 
         std::unique_ptr<GSViewer> viewer_;
 
-        torch::Tensor background_;
+        torch::Tensor background_{};
         std::unique_ptr<TrainingProgress> progress_;
         size_t train_dataset_size_;
-        size_t val_dataset_size_;
 
-        // Metrics
-        std::unique_ptr<metrics::PSNR> psnr_metric_;
-        std::unique_ptr<metrics::SSIM> ssim_metric_;
-        std::unique_ptr<metrics::LPIPS> lpips_metric_;
-        std::unique_ptr<metrics::MetricsReporter> metrics_reporter_;
+        // Bilateral grid components
+        std::unique_ptr<gs::BilateralGrid> bilateral_grid_;
+        std::unique_ptr<torch::optim::Adam> bilateral_grid_optimizer_;
 
-        void save_depth_visualization(const torch::Tensor& depth, int iteration, const std::string& prefix);
-        torch::Tensor apply_depth_colormap(const torch::Tensor& depth_normalized);
-
+        // Metrics evaluator - handles all evaluation logic
+        std::unique_ptr<metrics::MetricsEvaluator> evaluator_;
     };
 
 } // namespace gs
